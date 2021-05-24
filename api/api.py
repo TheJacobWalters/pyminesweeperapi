@@ -1,55 +1,115 @@
 from flask import Flask
-import redis
-import pickle
 import json
+import redis
 import pdb
+import pickle
+
 app = Flask(__name__)
 
-# connect to mongodb
-redisConnection = redis.Redis()
+def getNeighbors(x,y):
+    x = int(x)
+    y = int(y)
+
+    def func (input):
+        if input[0] < 0:
+            return False
+        if input[0] > 29:
+            return False
+        if input[1] < 0:
+            return False
+        if input[1] > 15:
+            return False
+        else:
+            return True
+
+    neighbors = []
+    neighbors.append((x-1, y-1))
+    neighbors.append((x, y-1))
+    neighbors.append((x+1, y-1))
+    neighbors.append((x-1, y))
+    neighbors.append((x+1, y))
+    neighbors.append((x-1, y+1))
+    neighbors.append((x, y+1))
+    neighbors.append((x+1, y+1))
+    
+    neighbors = list(filter(func, neighbors))
+
+    return neighbors
+
+def getHint(x,y):
+    REDIS = redis.Redis()
+    hint = 0
+    neighbors = getNeighbors(x,y)
+    for neighbor in neighbors:
+        result = REDIS.get(f'{neighbor[0]}-{neighbor[1]}')
+        result = pickle.loads(result)
+        if result['ismined']:
+            hint += 1
+
+    return hint
+    # call get neighbors and then check those against whats in the db
 
 @app.route('/')
 def index():
-    return 'hello world'
+    return json.dumps({'success': True})
 
-@app.route('/mongoHealthCheck')
-def mongoTest():
-    return {'mongo Health' : redisConnection.ping()}
-
-@app.route('/newGameDefinedOrder')
-def newGameDefinedOrder():
+@app.route('/healthcheck')
+def healthcheck():
     REDIS = redis.Redis()
-    with open('board.json', 'rb') as file:
-        while True:
-            try:
-                JSON = pickle.load(file)
-                x = JSON['x']
-                y = JSON['y']
-                REDIS.set(f"{x}-{y}", pickle.dumps(JSON))
-                return "success"
-            except EOFError:
-                break
-        return "failure"
-'''
+    result = REDIS.ping()
+    return json.dumps({'success':result})
+
 @app.route('/newGame')
 def newGame():
     REDIS = redis.Redis()
-    for x in range(30):
-        for y in range(16):
-            REDIS.set(f"{x}-{y}", pickle.dumps({'mined':True}))
-    return "success"
-'''
-@app.route("/click/<x>/<y>")
-def click(x, y):
+    REDIS.set('markedMines', 0)
+    with open('board.json', 'rb') as f:
+        while True:
+            try:
+                current = pickle.load(f)
+                x = current['x']
+                y = current['y']
+                REDIS.set(f'{x}-{y}', pickle.dumps(current))
+            except EOFError:
+                break
+    
+    return json.dumps({'success': True})
+
+# this needs to be changed to return a hint
+@app.route('/click/<x>/<y>')
+def click(x,y):
     REDIS = redis.Redis()
-    result = REDIS.get(f"{x}-{y}")
+    result = REDIS.get(f'{x}-{y}')
     result = pickle.loads(result)
     result['clicked'] = True
-    pdb.set_trace()
-    mined = result['ismined']
-    result = pickle.dumps(result)
-    REDIS.set(f"{x}-{y}", result)
-    if (mined):
-        return json.dumps({'Game Over' : True})
+    if result['ismined'] :
+        result['GameOver'] = True
     else:
-        return json.dumps({'Game Over' : False})
+        result['GameOver'] = False
+    result['hint'] = getHint(x,y)
+    insertion = pickle.dumps(result)
+    REDIS.set(f'{x}-{y}',insertion)
+    return json.dumps(result)
+
+@app.route('/mark/<x>/<y>')
+def mark(x,y):
+    REDIS = redis.Redis()
+    result = REDIS.get(f'{x}-{y}')
+    result = pickle.loads(result)
+    result['IsMarked'] = True
+    REDIS.incr('markedMines')
+    insertion = pickle.dumps(result)
+    REDIS.set(f'{x}-{y}', insertion)
+    return json.dumps(result)
+
+@app.route('/markedMines')
+def getMarkeMines():
+    REDIS = redis.Redis()
+    result = REDIS.get('markedMines')
+    result = result.decode()
+    return json.dumps({'markedMines':result})
+
+if __name__ == "__main__":
+    #getHint(0,0)
+    #getNeighbors(0,0)
+    app.run()
